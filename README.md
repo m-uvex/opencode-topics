@@ -17,11 +17,20 @@ It only calls in the AI agent when a topic drift is detected, so when the topic 
 
 ## Installation
 
-Add to your OpenCode config (`~/.config/opencode/opencode.json` or `opencode.jsonc`):
+Using the CLI:
+
+```bash
+opencode plugin add github:m-uvex/opencode-topics
+```
+
+Or add to your OpenCode config (`~/.config/opencode/opencode.json` or `opencode.jsonc`):
 
 ```json
 {
-  "plugin": ["opencode-topics"]
+  "plugin": [
+    "github:m-uvex/opencode-topics"
+  ]
+}
 ```
 
 ## License
