@@ -1,0 +1,26 @@
+{
+  "name": "opencode-topic-namer",
+  "version": "0.1.0",
+  "description": "Smart, token-efficient dynamic session re-titling for OpenCode that tracks topic drift and renames sessions.",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "type": "module",
+  "scripts": {
+    "build": "tsup src/index.ts --format cjs,esm --dts"
+  },
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "session",
+    "autotitle",
+    "topic"
+  ],
+  "author": "m_uvex",
+  "license": "MIT",
+  "devDependencies": {
+    "@opencode-ai/plugin": "^1.14.24",
+    "tsup": "^8.3.5",
+    "typescript": "^5.7.3"
+  }
+}
