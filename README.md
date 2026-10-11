@@ -21,8 +21,7 @@ Add to your OpenCode config (`~/.config/opencode/opencode.json` or `opencode.jso
 
 ```json
 {
-  "plugin": ["opencode-topic-namer"]
-}
+  "plugin": ["opencode-topics"]
 ```
 
 ## License

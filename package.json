@@ -1,5 +1,5 @@
 {
-  "name": "opencode-topic-namer",
+  "name": "opencode-topics",
   "version": "0.1.0",
   "description": "Smart, token-efficient dynamic session re-titling for OpenCode that tracks topic drift and renames sessions.",
   "main": "dist/index.js",

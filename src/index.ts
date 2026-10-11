@@ -50,7 +50,7 @@ function sanitizeTitle(title: string, maxLength = 50): string {
     .slice(0, maxLength)
 }
 
-export const TopicNamer: Plugin = async ({ client }) => {
+export const Topics: Plugin = async ({ client }) => {
   const sessions = new Map<string, SessionState>()
 
   async function getMessages(sessionId: string): Promise<Array<{ role: string; text: string }>> {
@@ -87,7 +87,7 @@ Rules:
 
     let tempId: string | null = null
     try {
-      const created = await client.session.create({ body: { title: "topic-namer-eval" } }) as any
+      const created = await client.session.create({ body: { title: "topics-eval" } }) as any
       tempId = created?.id || created?.data?.id
       if (!tempId) return null
 
@@ -213,4 +213,4 @@ Rules:
   }
 }
 
-export default TopicNamer
+export default Topics
