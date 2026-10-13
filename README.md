@@ -17,20 +17,67 @@ It only calls in the AI agent when a topic drift is detected, so when the topic 
 
 ## Installation
 
+One package works on both OpenCode generations: it exports the V2 plugin and the V1
+`server` hook, and OpenCode uses whichever it understands. Only the config key differs.
+
+### OpenCode 2.x
+
 Using the CLI:
 
 ```bash
 opencode plugin add github:m-uvex/opencode-topics
 ```
 
-Or add to your OpenCode config (`~/.config/opencode/opencode.json` or `opencode.jsonc`):
+Or add it to your config (`~/.config/opencode/opencode.jsonc` or the project's
+`opencode.json`):
+
+```jsonc
+{
+  "plugins": ["github:m-uvex/opencode-topics"]
+}
+```
+
+Titles are generated with the session's model. OpenCode rejects its free-tier models
+for plugin calls, so pin a model if your sessions run on one:
+
+```jsonc
+{
+  "plugins": [
+    {
+      "package": "github:m-uvex/opencode-topics",
+      "options": {
+        "model": { "providerID": "google", "id": "gemini-flash-latest" }
+      }
+    }
+  ]
+}
+```
+
+### OpenCode 1.x
+
+Using the CLI:
+
+```bash
+opencode plugin add github:m-uvex/opencode-topics
+```
+
+Or add it to your config (`~/.config/opencode/opencode.json`):
 
 ```json
 {
-  "plugin": [
-    "github:m-uvex/opencode-topics"
-  ]
+  "plugin": ["github:m-uvex/opencode-topics"]
 }
+```
+
+### Local checkout
+
+To test an unpushed checkout, drop a plugin file that re-exports it. OpenCode
+discovers `.ts` files in `~/.config/opencode/plugins/` (global) and
+`.opencode/plugins/` (project):
+
+```ts
+// ~/.config/opencode/plugins/topics.ts
+export { default } from "/absolute/path/to/opencode-topics/src/index.ts"
 ```
 
 ## License
