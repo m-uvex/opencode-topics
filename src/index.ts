@@ -71,11 +71,15 @@ function computeOverlap(setA: Set<string>, setB: Set<string>): number {
 }
 
 function sanitizeTitle(title: string, maxLength = 50): string {
-  return title
+  const cleaned = title
     .replace(/[^\w\s.\-~]/g, "")
     .replace(/\s+/g, " ")
     .trim()
-    .slice(0, maxLength)
+  if (cleaned.length <= maxLength) return cleaned
+  // cut on a word boundary so a long title never ends mid-word
+  const cut = cleaned.slice(0, maxLength)
+  const boundary = cut.lastIndexOf(" ")
+  return (boundary > 10 ? cut.slice(0, boundary) : cut).trim()
 }
 
 function buildPrompt(userSnippet: string, assistantSnippet: string, isDrift: boolean): string {
@@ -95,6 +99,91 @@ function readFirstLine(text: string): string | null {
   const line = text.trim().split("\n")[0].trim()
   const title = sanitizeTitle(line)
   return title.length > 0 ? title : null
+}
+
+// Instruction verbs, quantifiers and filler that survive the general stop list
+// but describe the request rather than the topic.
+const TITLE_STOP_WORDS = new Set([
+  "explain", "describe", "described", "describes", "tell", "tells", "told",
+  "show", "shows", "shown", "list", "lists", "summarize", "summary",
+  "give", "gives", "given", "one", "two", "three", "four", "five", "six",
+  "seven", "eight", "nine", "ten", "short", "brief", "simple", "quick",
+  "sentence", "sentences", "paragraph", "paragraphs", "word", "words",
+  "detail", "details", "exactly", "step", "steps", "about", "over", "onto",
+  "upon", "via", "per", "also", "really", "actually", "basically",
+  "thing", "things", "stuff",
+  // generic verbs: they connect topics, they are not the topic
+  "affect", "affects", "impact", "impacts", "cause", "causes", "change",
+  "changes", "fix", "fixes", "prevent", "prevents", "improve", "improves",
+  "reduce", "reduces", "increase", "increases", "use", "uses", "using",
+  "help", "helps", "mean", "means", "lead", "leads", "keep", "keeps",
+  "run", "runs",
+  // workspace filler: it is where the work happens, not what the work is
+  "repo", "repos", "repository", "repositories",
+])
+
+// Keeps dots, hyphens and underscores inside tokens so package.json, tsconfig.json
+// and round-robin stay whole instead of splitting into separate words.
+function tokenizeForTitle(text: string): string[] {
+  return text.match(/[A-Za-z0-9]+(?:[._-][A-Za-z0-9]+)*/g) ?? []
+}
+
+function isTitleWord(word: string): boolean {
+  if (word.length < 2 || /^\d+$/.test(word)) return false
+  const lower = word.toLowerCase()
+  return !STOP_WORDS.has(lower) && !TITLE_STOP_WORDS.has(lower)
+}
+
+function toTitleCase(word: string): string {
+  // filenames and identifiers keep their own casing
+  if (word.includes(".") || word.includes("_")) return word
+  if (word.includes("-")) return word.split("-").map(toTitleCase).join("-")
+  if (word === word.toUpperCase()) return word // acronyms: DNS, TTL, KP
+  if (/[a-z][A-Z]/.test(word)) return word // camelCase
+  return word[0].toUpperCase() + word.slice(1).toLowerCase()
+}
+
+// Words the assistant actually echoed are the topical core; a request full of
+// politeness and instruction verbs then has nothing left, which is the signal
+// to fall back to the model.
+function titleCandidates(userText: string, assistantText: string): string[] {
+  const seen = new Set<string>()
+  const userWords: string[] = []
+  for (const word of tokenizeForTitle(userText)) {
+    if (!isTitleWord(word)) continue
+    const key = word.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    userWords.push(word)
+  }
+  if (!assistantText) return userWords
+  const echoed = new Set(
+    tokenizeForTitle(assistantText).filter(isTitleWord).map(w => w.toLowerCase())
+  )
+  const shared = userWords.filter(w => echoed.has(w.toLowerCase()))
+  return shared.length >= 3 ? shared : userWords
+}
+
+export function buildExtractiveTitle(messages: TopicMessage[]): string | null {
+  const lastUser = messages.map(m => m.role).lastIndexOf("user")
+  if (lastUser === -1) return null
+  const userTexts = messages.filter(m => m.role === "user").map(m => m.text)
+  const windowAssistant = messages.filter(m => m.role === "assistant").map(m => m.text).join(" ")
+  const replyToLastUser = messages.slice(lastUser + 1).filter(m => m.role === "assistant").map(m => m.text).join(" ")
+
+  // Title the newest exchange first so an early drift does not blend the old
+  // topic into the new one; widen to the whole window when it is too thin.
+  const stages: Array<[string, string]> = [
+    [messages[lastUser].text, replyToLastUser || windowAssistant],
+    [userTexts.join(" "), windowAssistant],
+  ]
+  for (const [userText, assistantText] of stages) {
+    const words = titleCandidates(userText, assistantText).slice(0, 5).map(toTitleCase)
+    if (words.length < 3) continue
+    const title = sanitizeTitle(words.join(" "))
+    if (title.split(" ").length >= 3) return title
+  }
+  return null
 }
 
 async function checkSession(
@@ -147,7 +236,10 @@ async function checkSession(
 
   state.isRenaming = true
   try {
-    const newTitle = await port.nameTopic(sessionID, recentUserText, recentAssistantText, true)
+    // Token titles first: no provider, no auth, instant. The model only runs
+    // when the window holds fewer than three topical words.
+    const extracted = buildExtractiveTitle(recentMessages)
+    const newTitle = extracted ?? (await port.nameTopic(sessionID, recentUserText, recentAssistantText, true))
     if (newTitle && newTitle.toLowerCase() !== (state.currentTitle || "").toLowerCase()) {
       state.driftCount++
       // The "~ " prefix marks a title that moved off the original topic
