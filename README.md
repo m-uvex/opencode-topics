@@ -1,84 +1,45 @@
 # opencode-topics
 
-Adaptive, token-efficient session re-titling plugin for [OpenCode](https://opencode.ai).
-Tracks topic drift over long conversations and updates session titles dynamically so you never lose context.
+Adaptive, token-efficient session re-titling plugin for [OpenCode](https://opencode.ai). 
 
-## Why
+Tracks topic drift over long conversations and dynamically updates session titles so you never lose context in your session history.
 
-Most autotitle plugins name a session once on turn 1 and lock it. When a session drifts to another task 20 messages later, the title in your session list stays stuck on the original task.
+## The Problem
+Most auto-title plugins name a session on the first turn and lock it. When a conversation drifts to a completely different task 20 messages later, your session list stays stuck on the original prompt, making it difficult to find what you were actually working on.
 
-`opencode-topics`:
-1. Names the session on the initial prompt
-2. Runs a zero-token local keyword overlap check on every new message
-3. When drift is detected, calls in your agent to rename the session to match the new topic
-4. Marks drifted sessions with a subtle prefix (`~ Title`) so you know the topic changed from the original.
+## How It Works
+`opencode-topics` solves this by continuously monitoring your session without eating into your API limits:
 
-It only calls in the AI agent when a topic drift is detected, so when the topic stays the same it doesn't burn through your tokens.
+* **Initial Naming:** Generates a title based on your very first prompt.
+(Note: in v2 this is taken care of by opencode itself as opposed to the plugin.)
+* **Zero-Token Tracking:** Runs a local keyword overlap check on every new message to detect topic drift.
+* **Dynamic Re-Titling:** Uses a fast, tokenless algorithm to generate a fitting new title based on the recent message history.
+* **Visual Indicators:** Marks drifted sessions with a subtle prefix (`~ Title`) so you instantly know the topic has evolved from the original prompt.
+* **Economical Fallback:** Fully local by default. The running AI model is only triggered as a rare fallback if the locally generated title is detected to be too short.
 
 ## Installation
+*Fully supports both OpenCode v1 and v2.*
 
-One package works on both OpenCode generations: it exports the V2 plugin and the V1
-`server` hook, and OpenCode uses whichever it understands. Only the config key differs.
+### Option 1: Let the AI do it
+Simply open up an OpenCode session and send this prompt:
+```text
+Install the plugin m-uvex/opencode-topics from github.
+```
 
-### OpenCode 2.x
-
-Using the CLI:
-
+### Option 2: Using the CLI
+Open your terminal and run:
 ```bash
 opencode plugin add github:m-uvex/opencode-topics
 ```
 
-Or add it to your config (`~/.config/opencode/opencode.jsonc` or the project's
-`opencode.json`):
-
-```jsonc
+### Option 3: Manual Configuration
+Add the plugin to the top of your global config (~/.config/opencode/opencode.jsonc) or your project's local opencode.json:
+```json
 {
   "plugins": ["github:m-uvex/opencode-topics"]
 }
 ```
 
-Titles are generated with the session's model. OpenCode rejects its free-tier models
-for plugin calls, so pin a model if your sessions run on one:
-
-```jsonc
-{
-  "plugins": [
-    {
-      "package": "github:m-uvex/opencode-topics",
-      "options": {
-        "model": { "providerID": "google", "id": "gemini-flash-latest" }
-      }
-    }
-  ]
-}
-```
-
-### OpenCode 1.x
-
-Using the CLI:
-
-```bash
-opencode plugin add github:m-uvex/opencode-topics
-```
-
-Or add it to your config (`~/.config/opencode/opencode.json`):
-
-```json
-{
-  "plugin": ["github:m-uvex/opencode-topics"]
-}
-```
-
-### Local checkout
-
-To test an unpushed checkout, drop a plugin file that re-exports it. OpenCode
-discovers `.ts` files in `~/.config/opencode/plugins/` (global) and
-`.opencode/plugins/` (project):
-
-```ts
-// ~/.config/opencode/plugins/topics.ts
-export { default } from "/absolute/path/to/opencode-topics/src/index.ts"
-```
-
 ## License
 MIT
+
