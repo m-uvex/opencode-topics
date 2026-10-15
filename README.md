@@ -20,7 +20,7 @@ You start by asking *"How do I install Docker?"*, but twenty minutes later you'r
 
 * **Follows the conversation:** Recognizes when you have genuinely moved on to something new and re-titles the session automatically.
 * **Keeps the big picture:** Sub-tasks stay anchored to your main project instead of losing context. Setting up an auth client inside your Immich session becomes `~ Immich: Authelia OAuth Client`.
-* **Subtle visual cue:** Any re-titled session gets a gentle `~` prefix, so you can tell at a glance that the conversation branched out from where it started.
+* **Customizable indicators:** Subtle `~` prefix by default, or count how many times the topic drifted like `(1) Title` -> `(2) Title`, or turn prefixes off completely.
 * **Zero extra cost:** Reads your messages locally using smart text patterns. It doesn't ping an AI model on every turn, saving your tokens and your money.
 * **Understands session history:** If you undo, rewind, or compact a long chat into a summary, your title stays in sync with what is currently on screen.
 
@@ -28,7 +28,7 @@ You start by asking *"How do I install Docker?"*, but twenty minutes later you'r
 
 ## Installation
 
-Works seamlessly on both OpenCode v1 and v2.
+Works on both OpenCode v1 and v2.
 
 ### Option 1: Just ask OpenCode (easiest)
 Paste this into your active session:
@@ -43,10 +43,68 @@ opencode plugin add github:m-uvex/opencode-topics
 ```
 
 ### Option 3: Add to your config
-Add this to your global config (`~/.config/opencode/opencode.jsonc`) or local `opencode.json`:
-```json
+Add the plugin to your global config (`~/.config/opencode/opencode.jsonc`) or local `opencode.json`. You can use it as a simple string or pass custom options:
+
+```jsonc
 {
-  "plugins": ["github:m-uvex/opencode-topics"]
+  "plugins": [
+    "github:m-uvex/opencode-topics",
+  ]
+}
+```
+
+---
+
+## Configuration
+
+Everything works out of the box with zero setup, but all behavior is fully customizable:
+
+```jsonc
+{
+  "plugins": [
+    [
+      "github:m-uvex/opencode-topics",
+      {
+        // Visual indicator added to the start of retitled sessions.
+        // Default is "~". Use "<count>" to track drifts, e.g. "(<count>)" -> "(1) Title", "(2) Title".
+        // Set to "" to disable prefixes completely.
+        "prefix": "~",
+      
+        // Title format for drifted sessions:
+        // - "project:task" (default) -> "~ Project: Current Sub-Task"
+        // - "task"                   -> "~ Current Sub-Task"
+        // - "project"                -> "~ Project"
+        "structure": "project:task",
+      
+        // How titles are generated:
+        // - "hybrid" (default): fast local extraction, model fallback if too short
+        // - "algorithm": 100% local, zero tokens, never touches a model
+        // - "ai": always uses the model
+        "titlesBy": "hybrid",
+      
+        // Check for topic drift every N messages (1-20, default: 1)
+        "checkEvery": 1,
+      
+        // How many recent user turns define the current topic window (1-5, default: 1)
+        "windowTurns": 1,
+      
+        // Topic overlap ratio required to stay on topic (0.05-1.0, default: 0.2)
+        "threshold": 0.2,
+      
+        // Consecutive off-topic turns required before renaming (1-5, default: 2)
+        "confirmations": 2,
+      
+        // Which session events trigger checks (default: all included)
+        "on": ["message", "compaction", "undo", "redo", "fork", "rename"],
+      
+        // Model override for the AI fallback (optional, defaults to your active session model)
+        "model": {
+          "providerID": "google",
+          "id": "gemini-3.8-flash"
+        }
+      }
+    ]
+  ]
 }
 ```
 
@@ -65,7 +123,7 @@ Add this to your global config (`~/.config/opencode/opencode.jsonc`) or local `o
 * **Tokenless Titles:** Local keyword analysis that detects shifts and generates titles without burning AI tokens.
 * **OpenCode V2 Support:** Built for the new v2 plugin engine while keeping full v1 backward compatibility.
 * **Granular Configuration:** Fine-tune how often checks run, what events trigger them, and whether to use the local algorithm or an AI model.
-* **Context & Umbrellas:** Project-anchored titles (`~ Project: Current Task`) and a refined vocabulary filter that ignores filler words.
+* **Context & Umbrellas:** Project-anchored titles (`~ Project: Current Task`), customizable counting prefixes, and clean stop-word filtering.
 
 ---
 
