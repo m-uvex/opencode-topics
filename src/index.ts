@@ -13,6 +13,8 @@ interface SessionState {
   // consecutive low coverage checks, renamed at options.confirmations
   pendingDrift: number
   isRenaming: boolean
+  // how many times this session has been retitled for drift (for counting prefixes like "(<count>)")
+  driftCount: number
 }
 
 interface TopicMessage {
@@ -40,6 +42,8 @@ type Trigger = "message" | "compaction" | "undo" | "redo" | "fork" | "rename"
 
 type TitlesBy = "hybrid" | "algorithm" | "ai"
 
+export type TitleStructure = "project:task" | "task" | "project"
+
 export interface TopicsOptions {
   model?: ModelRef
   titlesBy: TitlesBy
@@ -52,6 +56,10 @@ export interface TopicsOptions {
   // consecutive low coverage checks before the title changes
   confirmations: number
   on: Set<Trigger>
+  // indicator prefix for retitled sessions. Default is "~". Supports "<count>" to count drifts, e.g. "(<count>)" -> "(1) Title"
+  prefix: string
+  // title format: "project:task" (default), "task" (only sub-topic), or "project" (only project umbrella)
+  structure: TitleStructure
 }
 
 const DEFAULT_ON: Trigger[] = ["message", "compaction", "undo", "redo", "fork", "rename"]
@@ -81,6 +89,9 @@ export function normalizeOptions(raw: unknown): TopicsOptions {
     const picked = o.on.filter((t): t is Trigger => typeof t === "string" && (DEFAULT_ON as string[]).includes(t))
     if (picked.length > 0) on = new Set(picked)
   }
+  const prefix = typeof o.prefix === "string" ? o.prefix : "~"
+  const structure: TitleStructure =
+    o.structure === "task" || o.structure === "project" ? o.structure : "project:task"
   return {
     model: normalizeModel(o.model),
     titlesBy,
@@ -89,6 +100,8 @@ export function normalizeOptions(raw: unknown): TopicsOptions {
     threshold: num(o.threshold, 0.2, 0.05, 1, false),
     confirmations: num(o.confirmations, 2, 1, 5),
     on,
+    prefix,
+    structure,
   }
 }
 
@@ -204,7 +217,7 @@ function assistantText(messages: TopicMessage[]): string {
 
 function sanitizeTitle(title: string, maxLength = 60): string {
   return title
-    .replace(/[^\w\s.\-:~]/g, "")
+    .replace(/[^\w\s.\-:~()[\]]/g, "")
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, maxLength)
@@ -384,15 +397,26 @@ async function titleFor(
   return options.titlesBy === "hybrid" ? port.nameTopic(sessionID, userText, replyText, true) : null
 }
 
-function isDriftTitle(title: string | null): boolean {
-  return !!title && title.startsWith("~ ")
+function isDriftTitle(title: string | null, prefix = "~"): boolean {
+  if (!title) return false
+  if (prefix !== "" && prefix !== "~") {
+    if (prefix.includes("<count>")) {
+      const esc = prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+      const pattern = new RegExp("^" + esc.replace("<count>", "\\d+") + "\\s*")
+      if (pattern.test(title)) return true
+    } else if (title.startsWith(prefix.trim() + " ") || title.startsWith(prefix)) {
+      return true
+    }
+  }
+  // Standard drift patterns are always recognized
+  return title.startsWith("~ ") || /^\(\d+\)\s/.test(title)
 }
 
 // Extract a concise anchor phrase from the original/host title to preserve as
 // the topic umbrella when a sub-topic takes over (e.g. "Immich on Lunar: Authelia Oauth").
 function cleanHostAnchor(hostTitle: string | null): string | null {
   if (!hostTitle) return null
-  const bare = hostTitle.replace(/^~\s*/, "").trim()
+  const bare = hostTitle.replace(/^(?:~|\(\d+\))\s*/, "").trim()
   if (!bare) return null
   // Drop any existing sub-clause delimiter
   const chunk = bare.split(/\s*[:|]\s*|\s+-\s+/)[0].trim()
@@ -406,13 +430,42 @@ function cleanHostAnchor(hostTitle: string | null): string | null {
   return salient.slice(0, 3).map(toTitleCase).join(" ")
 }
 
-function composeDriftTitle(hostTitle: string | null, newFocus: string): string {
-  const anchor = cleanHostAnchor(hostTitle)
-  if (!anchor) return `~ ${newFocus}`
-  const aNorm = anchor.toLowerCase()
-  const fNorm = newFocus.toLowerCase()
-  if (fNorm.includes(aNorm) || aNorm.includes(fNorm)) return `~ ${newFocus}`
-  const combined = `~ ${anchor}: ${newFocus}`
+function composeDriftTitle(
+  hostTitle: string | null,
+  newFocus: string,
+  options: TopicsOptions,
+  count = 1,
+): string {
+  const prefixStr = options.prefix === ""
+    ? ""
+    : options.prefix.includes("<count>")
+      ? options.prefix.replaceAll("<count>", String(count)) + " "
+      : options.prefix + " "
+
+  const structure = options.structure ?? "project:task"
+  let body = ""
+
+  if (structure === "task") {
+    body = newFocus
+  } else if (structure === "project") {
+    body = cleanHostAnchor(hostTitle) ?? newFocus
+  } else {
+    // "project:task" (default)
+    const anchor = cleanHostAnchor(hostTitle)
+    if (!anchor) {
+      body = newFocus
+    } else {
+      const aNorm = anchor.toLowerCase()
+      const fNorm = newFocus.toLowerCase()
+      if (fNorm.includes(aNorm) || aNorm.includes(fNorm)) {
+        body = newFocus
+      } else {
+        body = `${anchor}: ${newFocus}`
+      }
+    }
+  }
+
+  const combined = prefixStr + body
   return sanitizeTitle(combined, 60)
 }
 
@@ -434,13 +487,14 @@ async function recordBaseline(
 ): Promise<void> {
   const title = await port.readTitle(sessionID)
   // a drifted title from a previous run is not the host's own opinion
-  state.hostTitle = isDriftTitle(title) ? null : title
+  state.hostTitle = isDriftTitle(title, options.prefix) ? null : title
   state.currentTitle = title
   state.topic = newTopicSet(title ?? "", userTexts(messages).slice(-options.windowTurns).join(" "))
   state.seen = true
   state.lastCheckedIndex = messages.length
   state.lastCheckedUsers = userTexts(messages).length
   state.pendingDrift = 0
+  state.driftCount = 0
 }
 
 // After messages vanish (undo) or come back (redo) the title may describe
@@ -464,11 +518,11 @@ async function reconcileTitle(
   // a summary): keep the title it has.
   if (windowKeywords.size === 0) return
 
-  if (!isDriftTitle(state.currentTitle)) return
+  if (!isDriftTitle(state.currentTitle, options.prefix)) return
 
   // The messages the drift title was based on are gone: if the session is back
   // on the host's original topic, give the host its own title back.
-  if (state.hostTitle && !isDriftTitle(state.hostTitle)) {
+  if (state.hostTitle && !isDriftTitle(state.hostTitle, options.prefix)) {
     const hostKeywords = extractKeywords(state.hostTitle)
     if (hostKeywords.size > 0 && coverage(hostKeywords, windowKeywords) >= options.threshold) {
       state.currentTitle = state.hostTitle
@@ -481,7 +535,7 @@ async function reconcileTitle(
   // Still off the original topic: title whatever history is left.
   const newTitle = await titleFor(port, sessionID, recent, options)
   if (newTitle && newTitle.toLowerCase() !== (state.currentTitle ?? "").toLowerCase()) {
-    const fullTitle = composeDriftTitle(state.hostTitle, newTitle)
+    const fullTitle = composeDriftTitle(state.hostTitle, newTitle, options, state.driftCount || 1)
     state.currentTitle = fullTitle
     state.topic = newTopicSet(fullTitle, windowKeywords)
     await port.writeTitle(sessionID, fullTitle)
@@ -506,6 +560,7 @@ export async function checkSession(
       lastCheckedUsers: 0,
       pendingDrift: 0,
       isRenaming: false,
+      driftCount: 0,
     }
     sessions.set(sessionID, state)
   }
@@ -545,12 +600,13 @@ export async function checkSession(
     // The host retitled the session: follow it, unless it is our own drift
     // title coming back through the event stream.
     const title = await port.readTitle(sessionID)
-    if (title && title !== state.currentTitle && !isDriftTitle(title)) {
+    if (title && title !== state.currentTitle && !isDriftTitle(title, options.prefix)) {
       state.currentTitle = title
       // the host often titles the session a moment after the first prompt, so
       // this is where the title an undo can fall back to usually arrives
       state.hostTitle = title
       state.topic = extractKeywords(title)
+      state.driftCount = 0
     }
     return
   }
@@ -592,9 +648,8 @@ export async function checkSession(
   try {
     const newTitle = await titleFor(port, sessionID, recent, options)
     if (newTitle && newTitle.toLowerCase() !== (state.currentTitle ?? "").toLowerCase()) {
-      // The "~ " prefix marks a title that moved off the original topic, preserving
-      // the umbrella topic anchor when one exists (e.g. "~ Immich: Authelia Oauth Client")
-      const fullTitle = composeDriftTitle(state.hostTitle, newTitle)
+      state.driftCount++
+      const fullTitle = composeDriftTitle(state.hostTitle, newTitle, options, state.driftCount)
       state.currentTitle = fullTitle
       state.topic = newTopicSet(fullTitle, recentUserText)
       state.pendingDrift = 0
