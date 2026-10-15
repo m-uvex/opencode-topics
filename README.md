@@ -1,45 +1,74 @@
 # opencode-topics
 
-Adaptive, token-efficient session re-titling plugin for [OpenCode](https://opencode.ai). 
+> Session titles that evolve as your conversation moves.
 
-Tracks topic drift over long conversations and dynamically updates session titles so you never lose context in your session history.
+A smart re-titling plugin for [OpenCode](https://opencode.ai). When a quick question turns into an hour-long debugging marathon, `opencode-topics` keeps your sidebar accurate so you can always find your work later.
 
-## The Problem
-Most auto-title plugins name a session on the first turn and lock it. When a conversation drifts to a completely different task 20 messages later, your session list stays stuck on the original prompt, making it difficult to find what you were actually working on.
+---
 
-## How It Works
-`opencode-topics` solves this by continuously monitoring your session without eating into your API limits:
+## Why You Need This
 
-* **Initial Naming:** Generates a title based on your very first prompt.
-(Note: in v2 this is taken care of by opencode itself as opposed to the plugin.)
-* **Zero-Token Tracking:** Runs a local keyword overlap check on every new message to detect topic drift.
-* **Dynamic Re-Titling:** Uses a fast, tokenless algorithm to generate a fitting new title based on the recent message history.
-* **Visual Indicators:** Marks drifted sessions with a subtle prefix (`~ Title`) so you instantly know the topic has evolved from the original prompt.
-* **Economical Fallback:** Fully local by default. The running AI model is only triggered as a rare fallback if the locally generated title is detected to be too short.
+Most chat tools name your session on the first message and never touch it again. 
+
+You start by asking *"How do I install Docker?"*, but twenty minutes later you're deep into setting up an OAuth server. Later on, you're scanning your session list looking for your OAuth work, and all you see is *"How do I install Docker"*.
+
+`opencode-topics` quietly tracks what you are actually working on and updates the title when the topic shifts, without getting in your way or burning through your AI limits.
+
+---
+
+## What It Does
+
+* **Follows the conversation:** Recognizes when you have genuinely moved on to something new and re-titles the session automatically.
+* **Keeps the big picture:** Sub-tasks stay anchored to your main project instead of losing context. Setting up an auth client inside your Immich session becomes `~ Immich: Authelia OAuth Client`.
+* **Subtle visual cue:** Any re-titled session gets a gentle `~` prefix, so you can tell at a glance that the conversation branched out from where it started.
+* **Zero extra cost:** Reads your messages locally using smart text patterns. It doesn't ping an AI model on every turn, saving your tokens and your money.
+* **Understands session history:** If you undo, rewind, or compact a long chat into a summary, your title stays in sync with what is currently on screen.
+
+---
 
 ## Installation
-*Fully supports both OpenCode v1 and v2.*
 
-### Option 1: Let the AI do it
-Simply open up an OpenCode session and send this prompt:
+Works seamlessly on both OpenCode v1 and v2.
+
+### Option 1: Just ask OpenCode (easiest)
+Paste this into your active session:
 ```text
 Install the plugin m-uvex/opencode-topics from github.
 ```
 
 ### Option 2: Using the CLI
-Open your terminal and run:
+Run this in your terminal:
 ```bash
 opencode plugin add github:m-uvex/opencode-topics
 ```
 
-### Option 3: Manual Configuration
-Add the plugin to the top of your global config (~/.config/opencode/opencode.jsonc) or your project's local opencode.json:
+### Option 3: Add to your config
+Add this to your global config (`~/.config/opencode/opencode.jsonc`) or local `opencode.json`:
 ```json
 {
   "plugins": ["github:m-uvex/opencode-topics"]
 }
 ```
 
-## License
-MIT
+---
 
+## Roadmap
+
+```text
+──●──────────────────●──────────────────●──────────────────●──────────────────●
+  Initial Release      Tokenless Titles   OpenCode V2        Granular Config    Context & Umbrellas
+  smart auto-titling   runs locally       dual engine        custom cadence     anchor to project,
+  for v1 chats         zero token cost    v1 + v2 support    & trigger events   clean filler words
+```
+
+* **Initial Release:** Automatic session titling for OpenCode v1.
+* **Tokenless Titles:** Local keyword analysis that detects shifts and generates titles without burning AI tokens.
+* **OpenCode V2 Support:** Built for the new v2 plugin engine while keeping full v1 backward compatibility.
+* **Granular Configuration:** Fine-tune how often checks run, what events trigger them, and whether to use the local algorithm or an AI model.
+* **Context & Umbrellas:** Project-anchored titles (`~ Project: Current Task`) and a refined vocabulary filter that ignores filler words.
+
+---
+
+## License
+
+MIT
