@@ -60,6 +60,14 @@ export interface TopicsOptions {
   prefix: string
   // title format: "project:task" (default), "task" (only sub-topic), or "project" (only project umbrella)
   structure: TitleStructure
+  // Project prefix: "off", "auto" (directory basename), or an explicit label.
+  project: string
+  // Runtime project label resolved from the session location.
+  projectLabel?: string
+  // Maximum title length in characters.
+  maxTitleLength: number
+  // Maximum words the title model may use. Above 8, the prompt asks for one sentence.
+  maxWords: number
 }
 
 const DEFAULT_ON: Trigger[] = ["message", "compaction", "undo", "redo", "fork", "rename"]
@@ -72,6 +80,28 @@ function normalizeModel(raw: unknown): ModelRef | undefined {
   const id = typeof m.id === "string" ? m.id : typeof m.modelID === "string" ? m.modelID : undefined
   if (!id) return undefined
   return { id, providerID: m.providerID, variant: typeof m.variant === "string" ? m.variant : undefined }
+}
+
+function resolveProjectLabel(project: string, location: unknown): string | undefined {
+  if (project === "off") return undefined
+  if (project !== "auto") return project
+  const source = location as {
+    directory?: unknown
+    worktree?: unknown
+    project?: { canonical?: unknown }
+  } | null
+  const value =
+    typeof source?.project?.canonical === "string"
+      ? source.project.canonical
+      : typeof source?.directory === "string"
+        ? source.directory
+        : typeof source?.worktree === "string"
+          ? source.worktree
+          : undefined
+  if (!value) return undefined
+  const parts = value.split(/[\\/]+/).filter(Boolean)
+  const label = parts.at(-1)
+  return label && label !== "." ? label : undefined
 }
 
 // Bad config must never break the plugin, so every value falls back to default
@@ -92,6 +122,7 @@ export function normalizeOptions(raw: unknown): TopicsOptions {
   const prefix = typeof o.prefix === "string" ? o.prefix : "~"
   const structure: TitleStructure =
     o.structure === "task" || o.structure === "project" ? o.structure : "project:task"
+  const project = typeof o.project === "string" && o.project.trim() ? o.project.trim() : "off"
   return {
     model: normalizeModel(o.model),
     titlesBy,
@@ -102,6 +133,9 @@ export function normalizeOptions(raw: unknown): TopicsOptions {
     on,
     prefix,
     structure,
+    project,
+    maxTitleLength: num(o.maxTitleLength, 60, 20, 300),
+    maxWords: num(o.maxWords, 5, 3, 40),
   }
 }
 
@@ -223,24 +257,31 @@ function sanitizeTitle(title: string, maxLength = 60): string {
     .slice(0, maxLength)
 }
 
-function buildPrompt(userSnippet: string, assistantSnippet: string, isDrift: boolean): string {
-  return `Summarize the topic of this conversation in 3-5 words in title case.
+export function buildPrompt(userSnippet: string, assistantSnippet: string, isDrift: boolean, maxWords = 5): string {
+  const long = maxWords > 8
+  const lengthRule = long
+    ? `Write one clear, descriptive title for this conversation in at most ${maxWords} words. Use sentence case.`
+    : `Summarize the topic of this conversation in 3-${maxWords} words in title case.`
+  const wordRule = long ? `- At most ${maxWords} words` : `- 3 to ${maxWords} words maximum`
+  return `${lengthRule}
 ${isDrift ? "This conversation shifted into a new sub-topic. Summarize the NEW active focus." : ""}
 
 User: "${userSnippet.slice(0, 300)}"
 Assistant: "${assistantSnippet.slice(0, 300)}"
 
 Rules:
-- 3 to 5 words maximum
+${wordRule}
 - Never start the title with transition words like "Now", "Next", "Still", "Currently", "Finally" or verbs like "Set Up", "Configure", "Add"
 - Focus on the noun/subject being discussed
+- Include the distinguishing action or field when it matters
 - Keep dots in filenames like package.json or file.ts
+- Do not invent a project name that is not in the conversation
 - Return ONLY the title text, nothing else.`
 }
 
-function readFirstLine(text: string): string | null {
+function readFirstLine(text: string, maxLength = 60): string | null {
   const line = text.trim().split("\n")[0].trim()
-  const title = sanitizeTitle(line)
+  const title = sanitizeTitle(line, maxLength)
   return title.length > 0 ? title : null
 }
 
@@ -356,7 +397,7 @@ function titleFromTexts(userText: string, replyText: string): string | null {
   const words =
     phrase.length >= 3 && densityOf(phrase, echo) >= densityOf(window, echo) - 1e-9 ? phrase : window
   if (words.length < 3) return null
-  const title = sanitizeTitle(words.slice(0, 5).map(toTitleCase).join(" "))
+  const title = sanitizeTitle(words.slice(0, 5).map(toTitleCase).join(" "), options.maxTitleLength)
   return title.split(" ").length >= 3 ? title : null
 }
 
@@ -430,7 +471,7 @@ function cleanHostAnchor(hostTitle: string | null): string | null {
   return salient.slice(0, 3).map(toTitleCase).join(" ")
 }
 
-function composeDriftTitle(
+export function composeDriftTitle(
   hostTitle: string | null,
   newFocus: string,
   options: TopicsOptions,
@@ -447,26 +488,26 @@ function composeDriftTitle(
 
   if (structure === "task") {
     body = newFocus
-  } else if (structure === "project") {
-    body = cleanHostAnchor(hostTitle) ?? newFocus
   } else {
-    // "project:task" (default)
     const anchor = cleanHostAnchor(hostTitle)
-    if (!anchor) {
+    const project = options.projectLabel
+    if (structure === "project") {
+      body = project ?? anchor ?? newFocus
+    } else if (project) {
+      const pNorm = project.toLowerCase()
+      const fNorm = newFocus.toLowerCase()
+      body = fNorm === pNorm || fNorm.startsWith(`${pNorm}:`) ? newFocus : `${project}: ${newFocus}`
+    } else if (!anchor) {
       body = newFocus
     } else {
       const aNorm = anchor.toLowerCase()
       const fNorm = newFocus.toLowerCase()
-      if (fNorm.includes(aNorm) || aNorm.includes(fNorm)) {
-        body = newFocus
-      } else {
-        body = `${anchor}: ${newFocus}`
-      }
+      body = fNorm.includes(aNorm) || aNorm.includes(fNorm) ? newFocus : `${anchor}: ${newFocus}`
     }
   }
 
   const combined = prefixStr + body
-  return sanitizeTitle(combined, 60)
+  return sanitizeTitle(combined, options.maxTitleLength)
 }
 
 function newTopicSet(...parts: Array<Set<string> | string>): Set<string> {
@@ -724,6 +765,7 @@ const v2Plugin = Plugin.define({
   id: "topics",
   async setup(ctx) {
     const options = normalizeOptions(ctx.options)
+    options.projectLabel = resolveProjectLabel(options.project, ctx.location)
     const sessions = new Map<string, SessionState>()
     const timers = new Map<string, ReturnType<typeof setTimeout>>()
 
@@ -758,7 +800,7 @@ const v2Plugin = Plugin.define({
         await ctx.session.update({ sessionID, title })
       },
       async nameTopic(sessionID, userText, assistantText, isDrift) {
-        const prompt = buildPrompt(userText, assistantText, isDrift)
+        const prompt = buildPrompt(userText, assistantText, isDrift, options.maxWords)
         const candidates: (ModelRef | undefined)[] = []
         const push = (ref: ModelRef | undefined) => {
           if (ref && !candidates.some(c => c && c.providerID === ref.providerID && c.id === ref.id)) {
@@ -775,7 +817,7 @@ const v2Plugin = Plugin.define({
         for (const model of candidates) {
           try {
             const res = await ctx.generate.text({ prompt, model })
-            return readFirstLine(res.text)
+            return readFirstLine(res.text, options.maxTitleLength)
           } catch {
             // fall through to the next candidate model
           }
@@ -815,6 +857,12 @@ const v2Plugin = Plugin.define({
             }
             continue
           }
+
+          // A plugin instance exists per location. Ignore events for sessions
+          // owned by another location so two instances do not race on the title.
+          const session = await ctx.session.get({ sessionID }).catch(() => null)
+          const sessionDir = (session as { location?: { directory?: string } } | null)?.location?.directory
+          if (ctx.location?.directory && sessionDir && sessionDir !== ctx.location.directory) continue
 
           const trigger = triggerFromEventType(type)
           if (!trigger || !options.on.has(trigger)) continue
@@ -858,6 +906,7 @@ function sessionIdFromEvent(event: unknown): string | null {
 async function v1Server(input: PluginInput, pluginOptions?: Record<string, unknown>): Promise<Hooks> {
   const { client } = input
   const options = normalizeOptions(pluginOptions)
+  options.projectLabel = resolveProjectLabel(options.project, input)
   const sessions = new Map<string, SessionState>()
 
   const port: TopicPort = {
@@ -901,12 +950,12 @@ async function v1Server(input: PluginInput, pluginOptions?: Record<string, unkno
 
         const res = await client.session.prompt({
           path: { id: tempId },
-          body: { parts: [{ type: "text", text: buildPrompt(userText, assistantText, isDrift) }] }
+          body: { parts: [{ type: "text", text: buildPrompt(userText, assistantText, isDrift, options.maxWords) }] }
         }) as any
 
         const parts = res?.parts || res?.data?.parts || []
         for (const p of parts) {
-          if (p?.type === "text" && p?.text) return readFirstLine(p.text)
+          if (p?.type === "text" && p?.text) return readFirstLine(p.text, options.maxTitleLength)
         }
         return null
       } catch {

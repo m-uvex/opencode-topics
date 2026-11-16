@@ -20,6 +20,7 @@ You start by asking *"How do I install Docker?"*, but twenty minutes later you'r
 
 * **Follows the conversation:** Recognizes when you have genuinely moved on to something new and re-titles the session automatically.
 * **Keeps the big picture:** Sub-tasks stay anchored to your main project instead of losing context. Setting up an auth client inside your Immich session becomes `~ Immich: Authelia OAuth Client`.
+* **Project-aware and longer:** Optionally prefix the session directory basename (`opencode: ...`) and allow up to a sentence instead of a 3–5 word label.
 * **Customizable indicators:** Subtle `~` prefix by default, or count how many times the topic drifted like `(1) Title` -> `(2) Title`, or turn prefixes off completely.
 * **Zero extra cost:** Reads your messages locally using smart text patterns. It doesn't ping an AI model on every turn, saving your tokens and your money.
 * **Understands session history:** If you undo, rewind, or compact a long chat into a summary, your title stays in sync with what is currently on screen.
@@ -75,7 +76,20 @@ Everything works out of the box with zero setup, but all behavior is fully custo
         // - "task"                   -> "~ Current Sub-Task"
         // - "project"                -> "~ Project"
         "structure": "project:task",
-      
+
+        // Project prefix for drifted titles:
+        // - "off" (default): preserve the host title anchor
+        // - "auto": use the session directory/project basename
+        // - any other string: explicit label
+        "project": "auto",
+
+        // Maximum title length in characters (20-300, default: 60)
+        "maxTitleLength": 140,
+
+        // Maximum title words (3-40, default: 5).
+        // Above 8, the prompt asks for one descriptive sentence.
+        "maxWords": 20,
+
         // How titles are generated:
         // - "hybrid" (default): fast local extraction, model fallback if too short
         // - "algorithm": 100% local, zero tokens, never touches a model
