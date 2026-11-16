@@ -692,7 +692,7 @@ export async function checkSession(
       state.driftCount++
       const fullTitle = composeDriftTitle(state.hostTitle, newTitle, options, state.driftCount)
       state.currentTitle = fullTitle
-      state.topic = newTopicSet(fullTitle, recentUserText)
+      state.topic = newTopicSet(newTitle, recentUserText)
       state.pendingDrift = 0
       await port.writeTitle(sessionID, fullTitle)
     } else {
