@@ -481,7 +481,7 @@ function bestWindow(candidates: TitleWord[], echo: Echo): string[] {
   return best.map(w => w.word)
 }
 
-function titleFromTexts(userText: string, replyText: string): string | null {
+function titleFromTexts(userText: string, replyText: string, maxLength = 60): string | null {
   const candidates = titleCandidates(userText)
   if (candidates.length < 3) return null
   const echoed = new Set(titleSequence(replyText).map(w => w.key))
@@ -495,7 +495,7 @@ function titleFromTexts(userText: string, replyText: string): string | null {
   const words =
     phrase.length >= 3 && densityOf(phrase, echo) >= densityOf(window, echo) - 1e-9 ? phrase : window
   if (words.length < 3) return null
-  const title = sanitizeTitle(words.slice(0, 5).map(toTitleCase).join(" "), options.maxTitleLength)
+  const title = sanitizeTitle(words.slice(0, 5).map(toTitleCase).join(" "), maxLength)
   return title.split(" ").length >= 3 ? title : null
 }
 
@@ -514,7 +514,7 @@ export function buildExtractiveTitle(messages: TopicMessage[], options: TopicsOp
     [allUserTexts.join(" "), windowAssistant],
   ]
   for (const [userText, replyText] of stages) {
-    const title = titleFromTexts(userText, replyText)
+    const title = titleFromTexts(userText, replyText, options.maxTitleLength)
     if (title) return title
   }
   return null
