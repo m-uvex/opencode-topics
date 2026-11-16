@@ -20,7 +20,7 @@ You start by asking *"How do I install Docker?"*, but twenty minutes later you'r
 
 * **Follows the conversation:** Recognizes when you have genuinely moved on to something new and re-titles the session automatically.
 * **Keeps the big picture:** Sub-tasks stay anchored to your main project instead of losing context. Setting up an auth client inside your Immich session becomes `~ Immich: Authelia OAuth Client`.
-* **Project-aware and longer:** Optionally prefix the session directory basename (`opencode: ...`) and allow up to a sentence instead of a 3–5 word label.
+* **Project-aware and longer:** Prefix the session directory basename, optionally let the title model validate that name, and allow up to a sentence instead of a 3–5 word label.
 * **Customizable indicators:** Subtle `~` prefix by default, or count how many times the topic drifted like `(1) Title` -> `(2) Title`, or turn prefixes off completely.
 * **Zero extra cost:** Reads your messages locally using smart text patterns. It doesn't ping an AI model on every turn, saving your tokens and your money.
 * **Understands session history:** If you undo, rewind, or compact a long chat into a summary, your title stays in sync with what is currently on screen.
@@ -80,6 +80,10 @@ Everything works out of the box with zero setup, but all behavior is fully custo
         // Project prefix for drifted titles:
         // - "off" (default): preserve the host title anchor
         // - "auto": use the session directory/project basename
+        // - "ai": start from the folder name, then let the title model validate it
+        //   against the folder and conversation; it keeps the current name unless
+        //   the project clearly changed. Falls back to the folder name.
+        //   Requires a model-backed title mode ("ai", or "hybrid" with a model fallback).
         // - any other string: explicit label
         "project": "auto",
 
