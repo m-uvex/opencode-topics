@@ -858,12 +858,6 @@ const v2Plugin = Plugin.define({
             continue
           }
 
-          // A plugin instance exists per location. Ignore events for sessions
-          // owned by another location so two instances do not race on the title.
-          const session = await ctx.session.get({ sessionID }).catch(() => null)
-          const sessionDir = (session as { location?: { directory?: string } } | null)?.location?.directory
-          if (ctx.location?.directory && sessionDir && sessionDir !== ctx.location.directory) continue
-
           const trigger = triggerFromEventType(type)
           if (!trigger || !options.on.has(trigger)) continue
           if (trigger === "rename") {
@@ -872,6 +866,13 @@ const v2Plugin = Plugin.define({
             // ignore the echo of our own writes and unrelated session updates
             if (!title || title === state?.currentTitle || isDriftTitle(title)) continue
           }
+
+          // A plugin instance exists per location. Ignore events for sessions
+          // owned by another location so two instances do not race on the title.
+          const session = await ctx.session.get({ sessionID }).catch(() => null)
+          const sessionDir = (session as { location?: { directory?: string } } | null)?.location?.directory
+          if (ctx.location?.directory && sessionDir && sessionDir !== ctx.location.directory) continue
+
           if (trigger === "message") {
             void checkSession(port, sessions, sessionID, options, trigger).catch(() => {})
           } else {
