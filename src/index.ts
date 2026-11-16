@@ -90,14 +90,9 @@ function resolveProjectLabel(project: string, location: unknown): string | undef
     worktree?: unknown
     project?: { canonical?: unknown }
   } | null
-  const value =
-    typeof source?.project?.canonical === "string"
-      ? source.project.canonical
-      : typeof source?.directory === "string"
-        ? source.directory
-        : typeof source?.worktree === "string"
-          ? source.worktree
-          : undefined
+  const value = [source?.project?.canonical, source?.directory, source?.worktree].find(
+    (part): part is string => typeof part === "string" && part.length > 0,
+  )
   if (!value) return undefined
   const parts = value.split(/[\\/]+/).filter(Boolean)
   const label = parts.at(-1)
