@@ -257,7 +257,7 @@ function sanitizeTitle(title: string, maxLength = 60): string {
     .slice(0, maxLength)
 }
 
-export function buildPrompt(userSnippet: string, assistantSnippet: string, isDrift: boolean, maxWords = 5): string {
+function buildPrompt(userSnippet: string, assistantSnippet: string, isDrift: boolean, maxWords = 5): string {
   const long = maxWords > 8
   const lengthRule = long
     ? `Write one clear, descriptive title for this conversation in at most ${maxWords} words. Use sentence case.`
@@ -471,7 +471,7 @@ function cleanHostAnchor(hostTitle: string | null): string | null {
   return salient.slice(0, 3).map(toTitleCase).join(" ")
 }
 
-export function composeDriftTitle(
+function composeDriftTitle(
   hostTitle: string | null,
   newFocus: string,
   options: TopicsOptions,
