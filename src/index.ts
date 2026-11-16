@@ -23,11 +23,23 @@ interface TopicMessage {
   text: string
 }
 
+interface TopicTitle {
+  title: string
+  // Present only when the model was asked to validate the project label.
+  project?: string
+}
+
 interface TopicPort {
   readMessages(sessionID: string): Promise<TopicMessage[]>
   readTitle(sessionID: string): Promise<string | null>
   writeTitle(sessionID: string, title: string): Promise<void>
-  nameTopic(sessionID: string, userText: string, assistantText: string, isDrift: boolean): Promise<string | null>
+  nameTopic(
+    sessionID: string,
+    userText: string,
+    assistantText: string,
+    isDrift: boolean,
+    currentTitle: string | null,
+  ): Promise<TopicTitle | null>
 }
 
 interface ModelRef {
@@ -60,6 +72,14 @@ export interface TopicsOptions {
   prefix: string
   // title format: "project:task" (default), "task" (only sub-topic), or "project" (only project umbrella)
   structure: TitleStructure
+  // Project prefix: "off", "auto" (directory basename), "ai" (folder with model validation), or an explicit label.
+  project: string
+  // Runtime project label resolved from the session location.
+  projectLabel?: string
+  // Maximum title length in characters.
+  maxTitleLength: number
+  // Maximum words the title model may use. Above 8, the prompt asks for one sentence.
+  maxWords: number
 }
 
 const DEFAULT_ON: Trigger[] = ["message", "compaction", "undo", "redo", "fork", "rename"]
@@ -72,6 +92,31 @@ function normalizeModel(raw: unknown): ModelRef | undefined {
   const id = typeof m.id === "string" ? m.id : typeof m.modelID === "string" ? m.modelID : undefined
   if (!id) return undefined
   return { id, providerID: m.providerID, variant: typeof m.variant === "string" ? m.variant : undefined }
+}
+
+function projectPath(location: unknown): string | undefined {
+  const source = location as {
+    directory?: unknown
+    worktree?: unknown
+    project?: { canonical?: unknown }
+  } | null
+  return [source?.project?.canonical, source?.directory, source?.worktree].find(
+    (part): part is string => typeof part === "string" && part.length > 0,
+  )
+}
+
+function folderFromPath(path: string | undefined): string | undefined {
+  if (!path) return undefined
+  const parts = path.split(/[\\/]+/).filter(Boolean)
+  const label = parts.at(-1)
+  return label && label !== "." ? label : undefined
+}
+
+function resolveProjectLabel(project: string, location: unknown): string | undefined {
+  if (project === "off") return undefined
+  // "ai" starts from the folder name and lets the model refine it.
+  if (project === "auto" || project === "ai") return folderFromPath(projectPath(location))
+  return project
 }
 
 // Bad config must never break the plugin, so every value falls back to default
@@ -92,6 +137,7 @@ export function normalizeOptions(raw: unknown): TopicsOptions {
   const prefix = typeof o.prefix === "string" ? o.prefix : "~"
   const structure: TitleStructure =
     o.structure === "task" || o.structure === "project" ? o.structure : "project:task"
+  const project = typeof o.project === "string" && o.project.trim() ? o.project.trim() : "off"
   return {
     model: normalizeModel(o.model),
     titlesBy,
@@ -102,6 +148,9 @@ export function normalizeOptions(raw: unknown): TopicsOptions {
     on,
     prefix,
     structure,
+    project,
+    maxTitleLength: num(o.maxTitleLength, 60, 20, 300),
+    maxWords: num(o.maxWords, 5, 3, 40),
   }
 }
 
@@ -223,25 +272,115 @@ function sanitizeTitle(title: string, maxLength = 60): string {
     .slice(0, maxLength)
 }
 
-function buildPrompt(userSnippet: string, assistantSnippet: string, isDrift: boolean): string {
-  return `Summarize the topic of this conversation in 3-5 words in title case.
-${isDrift ? "This conversation shifted into a new sub-topic. Summarize the NEW active focus." : ""}
+interface ProjectPromptContext {
+  current?: string
+  currentTitle?: string
+  folder?: string
+  path?: string
+}
 
+function buildPrompt(
+  userSnippet: string,
+  assistantSnippet: string,
+  isDrift: boolean,
+  maxWords = 5,
+  project?: ProjectPromptContext,
+): string {
+  const long = maxWords > 8
+  const lengthRule = long
+    ? `Write one clear, descriptive title for this conversation in at most ${maxWords} words. Use sentence case.`
+    : `Summarize the topic of this conversation in 3-${maxWords} words in title case.`
+  const wordRule = long ? `- At most ${maxWords} words` : `- 3 to ${maxWords} words maximum`
+  const projectBlock = project
+    ? `
+Project context:
+- Folder: ${project.folder ?? "unknown"}
+- Path: ${project.path ?? "unknown"}
+- Current project: ${project.current ?? "unknown"}
+- Current title: ${project.currentTitle ?? "unknown"}
+
+Validate the current project name. Keep it unless the conversation clearly moved to a different project or the current name is only the raw folder name and the conversation shows the real product name. Use 1-4 words, title case, no colon. The project is the repository or product, not the current task. Do not repeat the project name in the title; it is added as a prefix.
+`
+    : ""
+  const responseRule = project
+    ? `- Return exactly two lines:
+Project: <project name>
+Title: <title>`
+    : `- Return ONLY the title text, nothing else.`
+  return `${lengthRule}
+${isDrift ? "This conversation shifted into a new sub-topic. Summarize the NEW active focus." : ""}
+${projectBlock}
 User: "${userSnippet.slice(0, 300)}"
 Assistant: "${assistantSnippet.slice(0, 300)}"
 
 Rules:
-- 3 to 5 words maximum
+${wordRule}
 - Never start the title with transition words like "Now", "Next", "Still", "Currently", "Finally" or verbs like "Set Up", "Configure", "Add"
 - Focus on the noun/subject being discussed
+- Include the distinguishing action or field when it matters
 - Keep dots in filenames like package.json or file.ts
-- Return ONLY the title text, nothing else.`
+- Do not invent a project name that is not in the folder, path, or conversation
+${responseRule}`
 }
 
-function readFirstLine(text: string): string | null {
-  const line = text.trim().split("\n")[0].trim()
-  const title = sanitizeTitle(line)
-  return title.length > 0 ? title : null
+const GENERIC_PROJECT_NAMES = new Set([
+  "project", "software", "development", "code", "repository", "repo",
+  "workspace", "app", "application", "home", "none", "unknown",
+  "conversation", "session", "chat", "assistant",
+])
+
+function cleanProjectLabel(raw: string): string | undefined {
+  const label = raw
+    .replace(/^[\s"'`*_]+|[\s"'`*_]+$/g, "")
+    .replace(/\s+/g, " ")
+    .replace(/[.,;:!?]+$/g, "")
+    .trim()
+  if (!label || label.length > 40) return undefined
+  if (!/^[\p{L}\p{N}][\p{L}\p{N} ._-]*$/u.test(label)) return undefined
+  const words = label.split(" ").filter(Boolean)
+  if (words.length < 1 || words.length > 4) return undefined
+  if (GENERIC_PROJECT_NAMES.has(label.toLowerCase())) return undefined
+  return label
+}
+
+function parseTitleResult(text: string, maxLength = 60): TopicTitle | null {
+  const raw = text.trim()
+  if (!raw) return null
+
+  let project: string | undefined
+  let title: string | undefined
+
+  const jsonStart = raw.indexOf("{")
+  const jsonEnd = raw.lastIndexOf("}")
+  if (jsonStart >= 0 && jsonEnd > jsonStart) {
+    try {
+      const parsed = JSON.parse(raw.slice(jsonStart, jsonEnd + 1)) as { project?: unknown; title?: unknown }
+      if (typeof parsed.title === "string") title = parsed.title
+      if (typeof parsed.project === "string") project = parsed.project
+    } catch {
+      // not JSON; fall through to the line parser
+    }
+  }
+
+  const lines = raw
+    .split("\n")
+    .map(line => line.replace(/^[-*]\s*/, "").replace(/\*\*/g, "").replace(/`/g, "").trim())
+
+  if (!title) {
+    for (const line of lines) {
+      const match = /^(project|title)\s*:\s*(.+)$/i.exec(line)
+      if (!match) continue
+      if (match[1].toLowerCase() === "project") project ??= match[2]
+      else title ??= match[2]
+    }
+  }
+  if (!title) {
+    title = lines.find(line => line && !/^project\s*:/i.test(line))
+  }
+  if (!title) return null
+  const cleanTitle = sanitizeTitle(title, maxLength)
+  if (!cleanTitle) return null
+  return { title: cleanTitle, project: project ? cleanProjectLabel(project) : undefined }
 }
 
 function toTitleCase(word: string): string {
@@ -342,7 +481,7 @@ function bestWindow(candidates: TitleWord[], echo: Echo): string[] {
   return best.map(w => w.word)
 }
 
-function titleFromTexts(userText: string, replyText: string): string | null {
+function titleFromTexts(userText: string, replyText: string, maxLength = 60): string | null {
   const candidates = titleCandidates(userText)
   if (candidates.length < 3) return null
   const echoed = new Set(titleSequence(replyText).map(w => w.key))
@@ -356,7 +495,7 @@ function titleFromTexts(userText: string, replyText: string): string | null {
   const words =
     phrase.length >= 3 && densityOf(phrase, echo) >= densityOf(window, echo) - 1e-9 ? phrase : window
   if (words.length < 3) return null
-  const title = sanitizeTitle(words.slice(0, 5).map(toTitleCase).join(" "))
+  const title = sanitizeTitle(words.slice(0, 5).map(toTitleCase).join(" "), maxLength)
   return title.split(" ").length >= 3 ? title : null
 }
 
@@ -375,7 +514,7 @@ export function buildExtractiveTitle(messages: TopicMessage[], options: TopicsOp
     [allUserTexts.join(" "), windowAssistant],
   ]
   for (const [userText, replyText] of stages) {
-    const title = titleFromTexts(userText, replyText)
+    const title = titleFromTexts(userText, replyText, options.maxTitleLength)
     if (title) return title
   }
   return null
@@ -388,13 +527,16 @@ async function titleFor(
   sessionID: string,
   messages: TopicMessage[],
   options: TopicsOptions,
-): Promise<string | null> {
+  currentTitle: string | null,
+): Promise<TopicTitle | null> {
   const userText = userTexts(messages).join(" ")
   const replyText = assistantText(messages)
-  if (options.titlesBy === "ai") return port.nameTopic(sessionID, userText, replyText, true)
+  if (options.titlesBy === "ai") return port.nameTopic(sessionID, userText, replyText, true, currentTitle)
   const extracted = buildExtractiveTitle(messages, options)
-  if (extracted) return extracted
-  return options.titlesBy === "hybrid" ? port.nameTopic(sessionID, userText, replyText, true) : null
+  if (extracted) return { title: extracted }
+  return options.titlesBy === "hybrid"
+    ? port.nameTopic(sessionID, userText, replyText, true, currentTitle)
+    : null
 }
 
 function isDriftTitle(title: string | null, prefix = "~"): boolean {
@@ -447,26 +589,29 @@ function composeDriftTitle(
 
   if (structure === "task") {
     body = newFocus
-  } else if (structure === "project") {
-    body = cleanHostAnchor(hostTitle) ?? newFocus
   } else {
-    // "project:task" (default)
     const anchor = cleanHostAnchor(hostTitle)
-    if (!anchor) {
+    const project = options.projectLabel
+    if (structure === "project") {
+      body = project ?? anchor ?? newFocus
+    } else if (project) {
+      const pNorm = project.toLowerCase()
+      const fNorm = newFocus.toLowerCase()
+      body =
+        fNorm === pNorm || fNorm.startsWith(`${pNorm}:`) || fNorm.startsWith(`${pNorm} `)
+          ? newFocus
+          : `${project}: ${newFocus}`
+    } else if (!anchor) {
       body = newFocus
     } else {
       const aNorm = anchor.toLowerCase()
       const fNorm = newFocus.toLowerCase()
-      if (fNorm.includes(aNorm) || aNorm.includes(fNorm)) {
-        body = newFocus
-      } else {
-        body = `${anchor}: ${newFocus}`
-      }
+      body = fNorm.includes(aNorm) || aNorm.includes(fNorm) ? newFocus : `${anchor}: ${newFocus}`
     }
   }
 
   const combined = prefixStr + body
-  return sanitizeTitle(combined, 60)
+  return sanitizeTitle(combined, options.maxTitleLength)
 }
 
 function newTopicSet(...parts: Array<Set<string> | string>): Set<string> {
@@ -533,11 +678,13 @@ async function reconcileTitle(
   }
 
   // Still off the original topic: title whatever history is left.
-  const newTitle = await titleFor(port, sessionID, recent, options)
+  const result = await titleFor(port, sessionID, recent, options, state.currentTitle)
+  if (result?.project && options.project === "ai") options.projectLabel = result.project
+  const newTitle = result?.title
   if (newTitle && newTitle.toLowerCase() !== (state.currentTitle ?? "").toLowerCase()) {
     const fullTitle = composeDriftTitle(state.hostTitle, newTitle, options, state.driftCount || 1)
     state.currentTitle = fullTitle
-    state.topic = newTopicSet(fullTitle, windowKeywords)
+    state.topic = newTopicSet(newTitle, windowKeywords)
     await port.writeTitle(sessionID, fullTitle)
   }
 }
@@ -646,12 +793,14 @@ export async function checkSession(
 
   state.isRenaming = true
   try {
-    const newTitle = await titleFor(port, sessionID, recent, options)
+    const result = await titleFor(port, sessionID, recent, options, state.currentTitle)
+    if (result?.project && options.project === "ai") options.projectLabel = result.project
+    const newTitle = result?.title
     if (newTitle && newTitle.toLowerCase() !== (state.currentTitle ?? "").toLowerCase()) {
       state.driftCount++
       const fullTitle = composeDriftTitle(state.hostTitle, newTitle, options, state.driftCount)
       state.currentTitle = fullTitle
-      state.topic = newTopicSet(fullTitle, recentUserText)
+      state.topic = newTopicSet(newTitle, recentUserText)
       state.pendingDrift = 0
       await port.writeTitle(sessionID, fullTitle)
     } else {
@@ -724,6 +873,7 @@ const v2Plugin = Plugin.define({
   id: "topics",
   async setup(ctx) {
     const options = normalizeOptions(ctx.options)
+    options.projectLabel = resolveProjectLabel(options.project, ctx.location)
     const sessions = new Map<string, SessionState>()
     const timers = new Map<string, ReturnType<typeof setTimeout>>()
 
@@ -757,8 +907,18 @@ const v2Plugin = Plugin.define({
       async writeTitle(sessionID, title) {
         await ctx.session.update({ sessionID, title })
       },
-      async nameTopic(sessionID, userText, assistantText, isDrift) {
-        const prompt = buildPrompt(userText, assistantText, isDrift)
+      async nameTopic(sessionID, userText, assistantText, isDrift, currentTitle) {
+        const location = projectPath(ctx.location)
+        const projectContext =
+          options.project === "ai" && options.structure !== "task"
+            ? {
+                current: options.projectLabel,
+                currentTitle: currentTitle ?? undefined,
+                folder: folderFromPath(location),
+                path: location,
+              }
+            : undefined
+        const prompt = buildPrompt(userText, assistantText, isDrift, options.maxWords, projectContext)
         const candidates: (ModelRef | undefined)[] = []
         const push = (ref: ModelRef | undefined) => {
           if (ref && !candidates.some(c => c && c.providerID === ref.providerID && c.id === ref.id)) {
@@ -775,7 +935,7 @@ const v2Plugin = Plugin.define({
         for (const model of candidates) {
           try {
             const res = await ctx.generate.text({ prompt, model })
-            return readFirstLine(res.text)
+            return parseTitleResult(res.text, options.maxTitleLength)
           } catch {
             // fall through to the next candidate model
           }
@@ -824,6 +984,13 @@ const v2Plugin = Plugin.define({
             // ignore the echo of our own writes and unrelated session updates
             if (!title || title === state?.currentTitle || isDriftTitle(title)) continue
           }
+
+          // A plugin instance exists per location. Ignore events for sessions
+          // owned by another location so two instances do not race on the title.
+          const session = await ctx.session.get({ sessionID }).catch(() => null)
+          const sessionDir = (session as { location?: { directory?: string } } | null)?.location?.directory
+          if (ctx.location?.directory && sessionDir && sessionDir !== ctx.location.directory) continue
+
           if (trigger === "message") {
             void checkSession(port, sessions, sessionID, options, trigger).catch(() => {})
           } else {
@@ -858,6 +1025,7 @@ function sessionIdFromEvent(event: unknown): string | null {
 async function v1Server(input: PluginInput, pluginOptions?: Record<string, unknown>): Promise<Hooks> {
   const { client } = input
   const options = normalizeOptions(pluginOptions)
+  options.projectLabel = resolveProjectLabel(options.project, input)
   const sessions = new Map<string, SessionState>()
 
   const port: TopicPort = {
@@ -892,23 +1060,36 @@ async function v1Server(input: PluginInput, pluginOptions?: Record<string, unkno
     async writeTitle(sessionID, title) {
       await client.session.update({ path: { id: sessionID }, body: { title } })
     },
-    async nameTopic(_sessionID, userText, assistantText, isDrift) {
+    async nameTopic(_sessionID, userText, assistantText, isDrift, currentTitle) {
       let tempId: string | null = null
       try {
         const created = await client.session.create({ body: { title: "topics-eval" } }) as any
         tempId = created?.id || created?.data?.id
         if (!tempId) return null
 
+        const location = projectPath(input)
+        const projectContext =
+          options.project === "ai" && options.structure !== "task"
+            ? {
+                current: options.projectLabel,
+                currentTitle: currentTitle ?? undefined,
+                folder: folderFromPath(location),
+                path: location,
+              }
+            : undefined
+        const prompt = buildPrompt(userText, assistantText, isDrift, options.maxWords, projectContext)
+
         const res = await client.session.prompt({
           path: { id: tempId },
-          body: { parts: [{ type: "text", text: buildPrompt(userText, assistantText, isDrift) }] }
+          body: { parts: [{ type: "text", text: prompt }] }
         }) as any
 
         const parts = res?.parts || res?.data?.parts || []
-        for (const p of parts) {
-          if (p?.type === "text" && p?.text) return readFirstLine(p.text)
-        }
-        return null
+        const text = parts
+          .filter((p: any) => p?.type === "text" && typeof p?.text === "string")
+          .map((p: any) => p.text)
+          .join("\n")
+        return parseTitleResult(text, options.maxTitleLength)
       } catch {
         return null
       } finally {
